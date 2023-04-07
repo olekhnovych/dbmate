@@ -14,15 +14,15 @@ jobs:
         include:
           - os: linux
             image: ubuntu-latest
-            arch: amd64
-            env: {}
+            arch: 386
+            setup: sudo apt-get update && sudo apt-get install -qq gcc-i686-linux-gnu
+            env:
+              CC: i686-linux-gnu-gcc
+              CXX: i686-linux-gnu-g++
           - os: linux
             image: ubuntu-latest
-            arch: arm64
-            setup: sudo apt-get update && sudo apt-get install -qq gcc-aarch64-linux-gnu
-            env:
-              CC: aarch64-linux-gnu-gcc
-              CXX: aarch64-linux-gnu-g++
+            arch: amd64
+            env: {}
           - os: linux
             image: ubuntu-latest
             arch: arm
@@ -31,6 +31,13 @@ jobs:
               CC: arm-linux-gnueabihf-gcc
               CXX: arm-linux-gnueabihf-g++
               GOARM: 7
+          - os: linux
+            image: ubuntu-latest
+            arch: arm64
+            setup: sudo apt-get update && sudo apt-get install -qq gcc-aarch64-linux-gnu
+            env:
+              CC: aarch64-linux-gnu-gcc
+              CXX: aarch64-linux-gnu-g++
           - os: macos
             image: macos-latest
             arch: amd64
@@ -51,9 +58,9 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - uses: actions/setup-go@v3
+      - uses: actions/setup-go@v4
         with:
-          go-version: "1.17"
+          go-version: "1.20"
 
       - name: Setup environment
         run: ${{ matrix.setup }}
@@ -71,7 +78,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: ${{ matrix.os }}-${{ matrix.arch }}
+          name: dbmate-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/dbmate-*
 
       - name: Publish binaries
@@ -154,12 +161,48 @@ jobs:
             type=semver,pattern={{major}}
 
       - name: Publish Docker image
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v4
         if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
         with:
           context: .
           target: release
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  npm:
+    name: NPM
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 16
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+
+      - uses: actions/download-artifact@v3
+        with:
+          path: dist
+
+      - run: find dist
+
+      - run: npm ci
+        working-directory: typescript
+
+      - run: npm run lint:ci
+        working-directory: typescript
+
+      - run: npm run generate
+        working-directory: typescript
+
+      - run: npm run publish
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        working-directory: typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}

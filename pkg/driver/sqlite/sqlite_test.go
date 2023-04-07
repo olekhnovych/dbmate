@@ -8,15 +8,15 @@ import (
 	"os"
 	"testing"
 
-	"github.com/amacneil/dbmate/pkg/dbmate"
-	"github.com/amacneil/dbmate/pkg/dbutil"
+	"github.com/amacneil/dbmate/v2/pkg/dbmate"
+	"github.com/amacneil/dbmate/v2/pkg/dbutil"
 
 	"github.com/stretchr/testify/require"
 )
 
 func testSQLiteDriver(t *testing.T) *Driver {
 	u := dbutil.MustParseURL(os.Getenv("SQLITE_TEST_URL"))
-	drv, err := dbmate.New(u).GetDriver()
+	drv, err := dbmate.New(u).Driver()
 	require.NoError(t, err)
 
 	return drv.(*Driver)
@@ -42,7 +42,7 @@ func prepTestSQLiteDB(t *testing.T) *sql.DB {
 
 func TestGetDriver(t *testing.T) {
 	db := dbmate.New(dbutil.MustParseURL("sqlite://"))
-	drvInterface, err := db.GetDriver()
+	drvInterface, err := db.Driver()
 	require.NoError(t, err)
 
 	// driver should have URL and default migrations table set
@@ -180,22 +180,29 @@ func TestSQLiteDumpSchema(t *testing.T) {
 	err = drv.InsertMigration(db, "abc2")
 	require.NoError(t, err)
 
+	// create a table that will trigger `sqlite_sequence` system table
+	_, err = db.Exec("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)")
+	require.NoError(t, err)
+
 	// DumpSchema should return schema
 	schema, err := drv.DumpSchema(db)
 	require.NoError(t, err)
+	require.Contains(t, string(schema), "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)")
 	require.Contains(t, string(schema), "CREATE TABLE IF NOT EXISTS \"test_migrations\"")
 	require.Contains(t, string(schema), ");\n-- Dbmate schema migrations\n"+
 		"INSERT INTO \"test_migrations\" (version) VALUES\n"+
 		"  ('abc1'),\n"+
 		"  ('abc2');\n")
 
+	// sqlite_* tables should not be present in the dump (.schema --nosys)
+	require.NotContains(t, string(schema), "sqlite_")
+
 	// DumpSchema should return error if command fails
 	drv.databaseURL = dbutil.MustParseURL(".")
 	schema, err = drv.DumpSchema(db)
 	require.Nil(t, schema)
 	require.Error(t, err)
-	require.EqualError(t, err, "Error: unable to open database \"/.\": "+
-		"unable to open database file")
+	require.EqualError(t, err, "Error: unable to open database \"/.\": unable to open database file")
 }
 
 func TestSQLiteDatabaseExists(t *testing.T) {

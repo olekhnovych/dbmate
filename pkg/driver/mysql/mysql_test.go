@@ -6,15 +6,15 @@ import (
 	"os"
 	"testing"
 
-	"github.com/amacneil/dbmate/pkg/dbmate"
-	"github.com/amacneil/dbmate/pkg/dbutil"
+	"github.com/amacneil/dbmate/v2/pkg/dbmate"
+	"github.com/amacneil/dbmate/v2/pkg/dbutil"
 
 	"github.com/stretchr/testify/require"
 )
 
 func testMySQLDriver(t *testing.T) *Driver {
 	u := dbutil.MustParseURL(os.Getenv("MYSQL_TEST_URL"))
-	drv, err := dbmate.New(u).GetDriver()
+	drv, err := dbmate.New(u).Driver()
 	require.NoError(t, err)
 
 	return drv.(*Driver)
@@ -40,7 +40,7 @@ func prepTestMySQLDB(t *testing.T) *sql.DB {
 
 func TestGetDriver(t *testing.T) {
 	db := dbmate.New(dbutil.MustParseURL("mysql://"))
-	drvInterface, err := db.GetDriver()
+	drvInterface, err := db.Driver()
 	require.NoError(t, err)
 
 	// driver should have URL and default migrations table set
@@ -143,6 +143,42 @@ func TestMySQLCreateDropDatabase(t *testing.T) {
 		require.Error(t, err)
 		require.Regexp(t, "Unknown database 'dbmate_test'", err.Error())
 	}()
+}
+
+func TestMySQLDumpArgs(t *testing.T) {
+	drv := testMySQLDriver(t)
+	drv.databaseURL = dbutil.MustParseURL("mysql://bob/mydb")
+
+	require.Equal(t, []string{"--opt",
+		"--routines",
+		"--no-data",
+		"--skip-dump-date",
+		"--skip-add-drop-table",
+		"--host=bob",
+		"mydb"}, drv.mysqldumpArgs())
+
+	drv.databaseURL = dbutil.MustParseURL("mysql://alice:pw@bob:5678/mydb")
+	require.Equal(t, []string{"--opt",
+		"--routines",
+		"--no-data",
+		"--skip-dump-date",
+		"--skip-add-drop-table",
+		"--host=bob",
+		"--port=5678",
+		"--user=alice",
+		"--password=pw",
+		"mydb"}, drv.mysqldumpArgs())
+
+	drv.databaseURL = dbutil.MustParseURL("mysql://alice:pw@bob:5678/mydb?socket=/var/run/mysqld/mysqld.sock")
+	require.Equal(t, []string{"--opt",
+		"--routines",
+		"--no-data",
+		"--skip-dump-date",
+		"--skip-add-drop-table",
+		"--socket=/var/run/mysqld/mysqld.sock",
+		"--user=alice",
+		"--password=pw",
+		"mydb"}, drv.mysqldumpArgs())
 }
 
 func TestMySQLDumpSchema(t *testing.T) {

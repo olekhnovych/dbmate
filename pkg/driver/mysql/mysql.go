@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/amacneil/dbmate/pkg/dbmate"
-	"github.com/amacneil/dbmate/pkg/dbutil"
+	"github.com/amacneil/dbmate/v2/pkg/dbmate"
+	"github.com/amacneil/dbmate/v2/pkg/dbutil"
 
 	_ "github.com/go-sql-driver/mysql" // database/sql driver
 )
@@ -132,17 +132,21 @@ func (drv *Driver) mysqldumpArgs() []string {
 	args := []string{"--opt", "--routines", "--no-data",
 		"--skip-dump-date", "--skip-add-drop-table"}
 
-	if hostname := drv.databaseURL.Hostname(); hostname != "" {
-		args = append(args, "--host="+hostname)
+	socket := drv.databaseURL.Query().Get("socket")
+	if socket != "" {
+		args = append(args, "--socket="+socket)
+	} else {
+		if hostname := drv.databaseURL.Hostname(); hostname != "" {
+			args = append(args, "--host="+hostname)
+		}
+		if port := drv.databaseURL.Port(); port != "" {
+			args = append(args, "--port="+port)
+		}
 	}
-	if port := drv.databaseURL.Port(); port != "" {
-		args = append(args, "--port="+port)
-	}
+
 	if username := drv.databaseURL.User.Username(); username != "" {
 		args = append(args, "--user="+username)
 	}
-	// mysql recommends against using environment variables to supply password
-	// https://dev.mysql.com/doc/refman/5.7/en/password-security-user.html
 	if password, set := drv.databaseURL.User.Password(); set {
 		args = append(args, "--password="+password)
 	}
@@ -241,8 +245,8 @@ func (drv *Driver) MigrationsTableExists(db *sql.DB) (bool, error) {
 
 // CreateMigrationsTable creates the schema_migrations table
 func (drv *Driver) CreateMigrationsTable(db *sql.DB) error {
-	_, err := db.Exec(fmt.Sprintf("create table if not exists %s "+
-		"(version varchar(255) primary key) character set latin1 collate latin1_bin",
+	_, err := db.Exec(fmt.Sprintf(
+		"create table if not exists %s (version varchar(128) primary key)",
 		drv.quotedMigrationsTableName()))
 
 	return err

@@ -5,7 +5,7 @@ import (
 	"io"
 	"net/url"
 
-	"github.com/amacneil/dbmate/pkg/dbutil"
+	"github.com/amacneil/dbmate/v2/pkg/dbutil"
 )
 
 // Driver provides top level database functions
@@ -26,8 +26,8 @@ type Driver interface {
 // DriverConfig holds configuration passed to driver constructors
 type DriverConfig struct {
 	DatabaseURL         *url.URL
-	MigrationsTableName string
 	Log                 io.Writer
+	MigrationsTableName string
 }
 
 // DriverFunc represents a driver constructor

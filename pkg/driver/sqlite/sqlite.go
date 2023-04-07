@@ -13,8 +13,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/amacneil/dbmate/pkg/dbmate"
-	"github.com/amacneil/dbmate/pkg/dbutil"
+	"github.com/amacneil/dbmate/v2/pkg/dbmate"
+	"github.com/amacneil/dbmate/v2/pkg/dbutil"
 
 	"github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3" // database/sql driver
@@ -131,7 +131,7 @@ func (drv *Driver) schemaMigrationsDump(db *sql.DB) ([]byte, error) {
 // DumpSchema returns the current database schema
 func (drv *Driver) DumpSchema(db *sql.DB) ([]byte, error) {
 	path := ConnectionString(drv.databaseURL)
-	schema, err := dbutil.RunCommand("sqlite3", path, ".schema")
+	schema, err := dbutil.RunCommand("sqlite3", path, ".schema --nosys")
 	if err != nil {
 		return nil, err
 	}
@@ -174,9 +174,9 @@ func (drv *Driver) MigrationsTableExists(db *sql.DB) (bool, error) {
 
 // CreateMigrationsTable creates the schema migrations table
 func (drv *Driver) CreateMigrationsTable(db *sql.DB) error {
-	_, err := db.Exec(
-		fmt.Sprintf("create table if not exists %s ", drv.quotedMigrationsTableName()) +
-			"(version varchar(255) primary key)")
+	_, err := db.Exec(fmt.Sprintf(
+		"create table if not exists %s (version varchar(128) primary key)",
+		drv.quotedMigrationsTableName()))
 
 	return err
 }

@@ -6,15 +6,15 @@ import (
 	"os"
 	"testing"
 
-	"github.com/amacneil/dbmate/pkg/dbmate"
-	"github.com/amacneil/dbmate/pkg/dbutil"
+	"github.com/amacneil/dbmate/v2/pkg/dbmate"
+	"github.com/amacneil/dbmate/v2/pkg/dbutil"
 
 	"github.com/stretchr/testify/require"
 )
 
 func testClickHouseDriver(t *testing.T) *Driver {
 	u := dbutil.MustParseURL(os.Getenv("CLICKHOUSE_TEST_URL"))
-	drv, err := dbmate.New(u).GetDriver()
+	drv, err := dbmate.New(u).Driver()
 	require.NoError(t, err)
 
 	return drv.(*Driver)
@@ -40,7 +40,7 @@ func prepTestClickHouseDB(t *testing.T) *sql.DB {
 
 func TestGetDriver(t *testing.T) {
 	db := dbmate.New(dbutil.MustParseURL("clickhouse://"))
-	drvInterface, err := db.GetDriver()
+	drvInterface, err := db.Driver()
 	require.NoError(t, err)
 
 	// driver should have URL and default migrations table set
@@ -51,21 +51,35 @@ func TestGetDriver(t *testing.T) {
 }
 
 func TestConnectionString(t *testing.T) {
-	t.Run("simple", func(t *testing.T) {
-		u, err := url.Parse("clickhouse://user:pass@host/db")
-		require.NoError(t, err)
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		// defaults
+		{"clickhouse://myhost", "clickhouse://myhost:9000"},
+		// custom port
+		{"clickhouse://myhost:1234/mydb", "clickhouse://myhost:1234/mydb"},
+		// database parameter
+		{"clickhouse://myhost?database=mydb", "clickhouse://myhost:9000/mydb"},
+		// username & password
+		{"clickhouse://abc:123@myhost/mydb", "clickhouse://abc:123@myhost:9000/mydb"},
+		{"clickhouse://abc:@myhost/mydb", "clickhouse://abc@myhost:9000/mydb"},
+		// username & password parameter
+		{"clickhouse://myhost/mydb?username=abc&password=123", "clickhouse://abc:123@myhost:9000/mydb"},
+		{"clickhouse://aaa:111@myhost/mydb?username=bbb&password=222", "clickhouse://bbb:222@myhost:9000/mydb"},
+		// custom parameters
+		{"clickhouse://myhost/mydb?dial_timeout=200ms", "clickhouse://myhost:9000/mydb?dial_timeout=200ms"},
+	}
 
-		s := connectionString(u)
-		require.Equal(t, "tcp://host:9000?database=db&password=pass&username=user", s)
-	})
+	for _, c := range cases {
+		t.Run(c.input, func(t *testing.T) {
+			u, err := url.Parse(c.input)
+			require.NoError(t, err)
 
-	t.Run("canonical", func(t *testing.T) {
-		u, err := url.Parse("clickhouse://host:9000?database=db&password=pass&username=user")
-		require.NoError(t, err)
-
-		s := connectionString(u)
-		require.Equal(t, "tcp://host:9000?database=db&password=pass&username=user", s)
-	})
+			actual := connectionString(u)
+			require.Equal(t, c.expected, actual)
+		})
+	}
 }
 
 func TestClickHouseCreateDropDatabase(t *testing.T) {
@@ -140,9 +154,7 @@ func TestClickHouseDumpSchema(t *testing.T) {
 		"    ('abc2');\n")
 
 	// DumpSchema should return error if command fails
-	values := drv.databaseURL.Query()
-	values.Set("database", "fakedb")
-	drv.databaseURL.RawQuery = values.Encode()
+	drv.databaseURL.Path = "/fakedb"
 	db, err = sql.Open("clickhouse", drv.databaseURL.String())
 	require.NoError(t, err)
 
@@ -180,7 +192,11 @@ func TestClickHouseDatabaseExists_Error(t *testing.T) {
 	drv.databaseURL.RawQuery = values.Encode()
 
 	exists, err := drv.DatabaseExists()
-	require.EqualError(t, err, "code: 192, message: Unknown user invalid")
+	require.EqualError(
+		t,
+		err,
+		"code: 516, message: invalid: Authentication failed: password is incorrect or there is no user with such name",
+	)
 	require.Equal(t, false, exists)
 }
 
@@ -193,7 +209,16 @@ func TestClickHouseCreateMigrationsTable(t *testing.T) {
 		// migrations table should not exist
 		count := 0
 		err := db.QueryRow("select count(*) from schema_migrations").Scan(&count)
-		require.EqualError(t, err, "code: 60, message: Table dbmate_test.schema_migrations doesn't exist.")
+		require.EqualError(
+			t,
+			err,
+			"code: 60, message: Table dbmate_test.schema_migrations doesn't exist",
+		)
+
+		// use driver function to check the same as above
+		exists, err := drv.MigrationsTableExists(db)
+		require.NoError(t, err)
+		require.Equal(t, false, exists)
 
 		// create table
 		err = drv.CreateMigrationsTable(db)
@@ -202,6 +227,11 @@ func TestClickHouseCreateMigrationsTable(t *testing.T) {
 		// migrations table should exist
 		err = db.QueryRow("select count(*) from schema_migrations").Scan(&count)
 		require.NoError(t, err)
+
+		// use driver function to check the same as above
+		exists, err = drv.MigrationsTableExists(db)
+		require.NoError(t, err)
+		require.Equal(t, true, exists)
 
 		// create table should be idempotent
 		err = drv.CreateMigrationsTable(db)
@@ -218,7 +248,16 @@ func TestClickHouseCreateMigrationsTable(t *testing.T) {
 		// migrations table should not exist
 		count := 0
 		err := db.QueryRow("select count(*) from \"testMigrations\"").Scan(&count)
-		require.EqualError(t, err, "code: 60, message: Table dbmate_test.testMigrations doesn't exist.")
+		require.EqualError(
+			t,
+			err,
+			"code: 60, message: Table dbmate_test.testMigrations doesn't exist",
+		)
+
+		// use driver function to check the same as above
+		exists, err := drv.MigrationsTableExists(db)
+		require.NoError(t, err)
+		require.Equal(t, false, exists)
 
 		// create table
 		err = drv.CreateMigrationsTable(db)
@@ -227,6 +266,11 @@ func TestClickHouseCreateMigrationsTable(t *testing.T) {
 		// migrations table should exist
 		err = db.QueryRow("select count(*) from \"testMigrations\"").Scan(&count)
 		require.NoError(t, err)
+
+		// use driver function to check the same as above
+		exists, err = drv.MigrationsTableExists(db)
+		require.NoError(t, err)
+		require.Equal(t, true, exists)
 
 		// create table should be idempotent
 		err = drv.CreateMigrationsTable(db)

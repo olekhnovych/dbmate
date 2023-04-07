@@ -2,13 +2,51 @@ package dbmate
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"regexp"
 	"strings"
 )
 
-// MigrationOptions is an interface for accessing migration options
-type MigrationOptions interface {
+// Migration represents an available migration and status
+type Migration struct {
+	Applied  bool
+	FileName string
+	FilePath string
+	FS       fs.FS
+	Version  string
+}
+
+func (m *Migration) readFile() (string, error) {
+	if m.FS == nil {
+		bytes, err := os.ReadFile(m.FilePath)
+		return string(bytes), err
+	}
+
+	bytes, err := fs.ReadFile(m.FS, m.FilePath)
+	return string(bytes), err
+}
+
+// Parse a migration
+func (m *Migration) Parse() (*ParsedMigration, error) {
+	contents, err := m.readFile()
+	if err != nil {
+		return nil, err
+	}
+
+	return parseMigrationContents(contents)
+}
+
+// ParsedMigration contains the migration contents and options
+type ParsedMigration struct {
+	Up          string
+	UpOptions   ParsedMigrationOptions
+	Down        string
+	DownOptions ParsedMigrationOptions
+}
+
+// ParsedMigrationOptions is an interface for accessing migration options
+type ParsedMigrationOptions interface {
 	Transaction() bool
 }
 
@@ -18,27 +56,6 @@ type migrationOptions map[string]string
 // Defaults to true.
 func (m migrationOptions) Transaction() bool {
 	return m["transaction"] != "false"
-}
-
-// Migration contains the migration contents and options
-type Migration struct {
-	Contents string
-	Options  MigrationOptions
-}
-
-// NewMigration constructs a Migration object
-func NewMigration() Migration {
-	return Migration{Contents: "", Options: make(migrationOptions)}
-}
-
-// parseMigration reads a migration file and returns (up Migration, down Migration, error)
-func parseMigration(path string) (Migration, Migration, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return NewMigration(), NewMigration(), err
-	}
-	up, down, err := parseMigrationContents(string(data))
-	return up, down, err
 }
 
 var (
@@ -54,7 +71,9 @@ var (
 // Error codes
 var (
 	ErrParseMissingUp      = errors.New("dbmate requires each migration to define an up block with '-- migrate:up'")
-	ErrParseUnexpectedStmt = errors.New("dbmate does not support statements defined outside of the '-- migrate:up' or '-- migrate:down' blocks")
+	ErrParseMissingDown    = errors.New("dbmate requires each migration to define a down block with '-- migrate:down'")
+	ErrParseWrongOrder     = errors.New("dbmate requires '-- migrate:up' to appear before '-- migrate:down'")
+	ErrParseUnexpectedStmt = errors.New("dbmate does not support statements preceding the '-- migrate:up' block")
 )
 
 // parseMigrationContents parses the string contents of a migration.
@@ -62,40 +81,33 @@ var (
 // block and the second representing the "down" block. This function
 // requires that at least an up block was defined and will otherwise
 // return an error.
-func parseMigrationContents(contents string) (Migration, Migration, error) {
-	up := NewMigration()
-	down := NewMigration()
-
-	upDirectiveStart, upDirectiveEnd, hasDefinedUpBlock := getMatchPositions(contents, upRegExp)
-	downDirectiveStart, downDirectiveEnd, hasDefinedDownBlock := getMatchPositions(contents, downRegExp)
+func parseMigrationContents(contents string) (*ParsedMigration, error) {
+	upDirectiveStart, hasDefinedUpBlock := getMatchPosition(contents, upRegExp)
+	downDirectiveStart, hasDefinedDownBlock := getMatchPosition(contents, downRegExp)
 
 	if !hasDefinedUpBlock {
-		return up, down, ErrParseMissingUp
-	} else if statementsPrecedeMigrateBlocks(contents, upDirectiveStart, downDirectiveStart) {
-		return up, down, ErrParseUnexpectedStmt
+		return nil, ErrParseMissingUp
+	}
+	if !hasDefinedDownBlock {
+		return nil, ErrParseMissingDown
+	}
+	if upDirectiveStart > downDirectiveStart {
+		return nil, ErrParseWrongOrder
+	}
+	if statementsPrecedeMigrateBlocks(contents, upDirectiveStart) {
+		return nil, ErrParseUnexpectedStmt
 	}
 
-	upEnd := len(contents)
-	downEnd := len(contents)
+	upBlock := substring(contents, upDirectiveStart, downDirectiveStart)
+	downBlock := substring(contents, downDirectiveStart, len(contents))
 
-	if hasDefinedDownBlock && upDirectiveStart < downDirectiveStart {
-		upEnd = downDirectiveStart
-	} else if hasDefinedDownBlock && upDirectiveStart > downDirectiveStart {
-		downEnd = upDirectiveStart
-	} else {
-		downEnd = -1
+	parsed := ParsedMigration{
+		Up:          upBlock,
+		UpOptions:   parseMigrationOptions(upBlock),
+		Down:        downBlock,
+		DownOptions: parseMigrationOptions(downBlock),
 	}
-
-	upDirective := substring(contents, upDirectiveStart, upDirectiveEnd)
-	downDirective := substring(contents, downDirectiveStart, downDirectiveEnd)
-
-	up.Options = parseMigrationOptions(upDirective)
-	up.Contents = substring(contents, upDirectiveStart, upEnd)
-
-	down.Options = parseMigrationOptions(downDirective)
-	down.Contents = substring(contents, downDirectiveStart, downEnd)
-
-	return up, down, nil
+	return &parsed, nil
 }
 
 // parseMigrationOptions parses the migration options out of a block
@@ -105,8 +117,11 @@ func parseMigrationContents(contents string) (Migration, Migration, error) {
 //
 //	fmt.Printf("%#v", parseMigrationOptions("-- migrate:up transaction:false"))
 //	// migrationOptions{"transaction": "false"}
-func parseMigrationOptions(contents string) MigrationOptions {
+func parseMigrationOptions(contents string) ParsedMigrationOptions {
 	options := make(migrationOptions)
+
+	// remove everything after first newline
+	contents = strings.SplitN(contents, "\n", 2)[0]
 
 	// strip away the -- migrate:[up|down] part
 	contents = blockDirectiveRegExp.ReplaceAllString(contents, "")
@@ -153,14 +168,8 @@ func parseMigrationOptions(contents string) MigrationOptions {
 // -- migrate:up
 // create table users (id serial, status status_type);
 // `, 54, -1)
-func statementsPrecedeMigrateBlocks(contents string, upDirectiveStart, downDirectiveStart int) bool {
-	until := upDirectiveStart
-
-	if downDirectiveStart > -1 {
-		until = min(upDirectiveStart, downDirectiveStart)
-	}
-
-	lines := strings.Split(contents[0:until], "\n")
+func statementsPrecedeMigrateBlocks(contents string, upDirectiveStart int) bool {
+	lines := strings.Split(contents[0:upDirectiveStart], "\n")
 
 	for _, line := range lines {
 		if isEmptyLine(line) || isCommentLine(line) {
@@ -183,12 +192,12 @@ func isCommentLine(s string) bool {
 	return commentLineRegExp.MatchString(s)
 }
 
-func getMatchPositions(s string, re *regexp.Regexp) (int, int, bool) {
+func getMatchPosition(s string, re *regexp.Regexp) (int, bool) {
 	match := re.FindStringIndex(s)
 	if match == nil {
-		return -1, -1, false
+		return -1, false
 	}
-	return match[0], match[1], true
+	return match[0], true
 }
 
 func substring(s string, begin, end int) string {
@@ -196,11 +205,4 @@ func substring(s string, begin, end int) string {
 		return ""
 	}
 	return s[begin:end]
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
